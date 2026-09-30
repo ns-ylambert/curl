@@ -851,28 +851,51 @@ init_config_builder_client_auth(struct Curl_easy *data,
   const struct rustls_certified_key *certified_key = NULL;
   CURLcode result = CURLE_OK;
 
-  if(conn_config->clientcert && !ssl_config->primary.key) {
-    failf(data, "rustls: must provide key with certificate '%s'",
-          conn_config->clientcert);
-    return CURLE_SSL_CERTPROBLEM;
-  }
-  else if(!conn_config->clientcert && ssl_config->primary.key) {
-    failf(data, "rustls: must provide certificate with key '%s'",
-          ssl_config->primary.key);
-    return CURLE_SSL_CERTPROBLEM;
+  {
+    const bool have_cert =
+      conn_config->clientcert || conn_config->cert_blob;
+    const bool have_key =
+      ssl_config->primary.key || ssl_config->primary.key_blob;
+
+    if(have_cert && !have_key) {
+      failf(data, "rustls: must provide key with certificate");
+      return CURLE_SSL_CERTPROBLEM;
+    }
+    else if(!have_cert && have_key) {
+      failf(data, "rustls: must provide certificate with key");
+      return CURLE_SSL_CERTPROBLEM;
+    }
   }
 
   curlx_dyn_init(&cert_contents, DYN_CERTFILE_SIZE);
   curlx_dyn_init(&key_contents, DYN_KEYFILE_SIZE);
 
-  if(!read_file_into(conn_config->clientcert, &cert_contents)) {
+  if(conn_config->cert_blob) {
+    if(curlx_dyn_addn(&cert_contents,
+                      conn_config->cert_blob->data,
+                      conn_config->cert_blob->len)) {
+      failf(data, "rustls: out of memory copying client certificate blob");
+      result = CURLE_OUT_OF_MEMORY;
+      goto cleanup;
+    }
+  }
+  else if(!read_file_into(conn_config->clientcert, &cert_contents)) {
     failf(data, "rustls: failed to read client certificate file: '%s'",
           conn_config->clientcert);
     result = CURLE_SSL_CERTPROBLEM;
     goto cleanup;
   }
 
-  if(!read_file_into(ssl_config->primary.key, &key_contents)) {
+  if(ssl_config->primary.key_blob) {
+    if(curlx_dyn_addn(&key_contents,
+                      ssl_config->primary.key_blob->data,
+                      ssl_config->primary.key_blob->len)) {
+      failf(data, "rustls: out of memory copying private key blob");
+      result = CURLE_OUT_OF_MEMORY;
+      goto cleanup;
+    }
+  }
+  else if(!read_file_into(ssl_config->primary.key, &key_contents)) {
     failf(data, "rustls: failed to read key file: '%s'",
           ssl_config->primary.key);
     result = CURLE_SSL_CERTPROBLEM;
@@ -1074,7 +1097,8 @@ static CURLcode cr_init_backend(struct Curl_cfilter *cf,
     }
   }
 
-  if(conn_config->clientcert || ssl_config->primary.key) {
+  if(conn_config->clientcert || conn_config->cert_blob ||
+     ssl_config->primary.key || ssl_config->primary.key_blob) {
     result = init_config_builder_client_auth(data,
                                              conn_config,
                                              ssl_config,
